@@ -1,0 +1,441 @@
+1.	trigger Lead_Score on Lead ( before update) { //before insert,
+2.	    Scorecard_A__c s;
+3.	    Id sid;
+4.	 
+5.	    for (Lead l : Trigger.New){
+6.	        //l.Rating = 'Hot';
+7.	        sid = l.ScorecardA__c; 
+8.	        integer s_count = [SELECT count() FROM Scorecard_A__c WHERE Id = :sid];
+9.	        if (s_count == 0){
+10.	          s = new Scorecard_A__c();
+11.	          insert s;
+12.	          sid = s.id;
+13.	          l.ScorecardA__c = sid;
+14.	            
+15.	        }
+16.	        else {
+17.	            s = [SELECT name FROM Scorecard_A__c WHERE Id = :sid];
+18.	        }           
+19.	        
+20.	        // Determine Funding Round
+21.	        String FundRound = '';
+22.	        if(l.Capital__c !=null && l.CapitalRaise__c!=null && l.Capital__c+l.CapitalRaise__c >2000000){
+23.	        	FundRound = 'Series A';
+24.	            }
+25.	        else{FundRound = 'Seed';}
+26.	        s.FundingRound__c = FundRound;
+27.	        
+28.	        // Calc componet Scores using functions from Class DealScore
+29.	        decimal Founder_Score  = DealScore.FounderScore(Integer.valueOf(l.NumberOfFounders__c),l.YearsOfExperience__c,l.FoundersEmployment__c,l.TeamSuccessRating__c,l.ESG__c, l.FounderPreviousVenture__c,l.Founder_Referred__c); //decimal.valueof((Math.random() * 10));
+30.	        decimal UnitEconomicScore  = DealScore.EconScore(l.UnitGrossRevenue__c,l.PerUnitCost__c,l.ProductType__c);
+31.	        decimal FinancePositionScore  = DealScore.FinanceScore(l.Capital__c,l.CapitalRaise__c,l.AnnualRevenue,l.Monthly_Burn__c,l.Runway__c,l.CostToAcquire__c,l.CustomerLTV__c,l.MonthlyPayrollExpense__c,l.ProductType__c);
+32.	        decimal ProductMarketScore  = DealScore.ProductScore(l.Product_Stage__c,l.ProductType__c,l.Competition__c,l.MarketShare__c,l.ProductStrategy__c);
+33.	        decimal ESGscore  = DealScore.ESGScore(l.ESG__c);
+34.	        decimal StratScore = DealScore.StratScore(FundRound,l.Location__c,l.Product_Stage__c,l.Industry);
+35.	        //(decimal Capital, decimal Raise, decimal Revenue, decimal Burn, string Runway, decimal CostToAcquire, decimal LTV, decimal Payroll,string ProductType)
+36.	        
+37.	        s.Founder_Score__c = Founder_Score;
+38.	        s.UnitEconomicScore__c = UnitEconomicScore;
+39.	        s.FinancePositionScore__c = FinancePositionScore;
+40.	        s.ProductMarketScore__c = ProductMarketScore;
+41.	        s.ESGscore__c =  ESGscore;
+42.	        s.StrategicScore__c = StratScore;
+43.	        
+44.	        // old score logic //s.DealScore__c = StratScore/100 * (Founder_Score*.3 + UnitEconomicScore*.20 + FinancePositionScore*.25 + ProductMarketScore*.25 ) * (ESGscore / 100 * 15)    ;
+45.	        s.DealScore__C = DealScore.DealScore(Founder_Score,UnitEconomicScore,FinancePositionScore,ProductMarketScore,ESGscore,StratScore);
+46.	        //s.DealScore__c = math.max( math.min(100,s.DealScore__c) , 0);
+47.	 
+48.	        
+49.	        
+50.	        update s;
+51.	    }
+52.	}
+  
+
+1.	public class DealScore {
+2.	  // Attributes usually come first!
+3.	  //String  name;
+4.	  //Integer protonTorpedoes;
+5.	  //Integer deathStarsDestroyed;
+6.	  //Decimal powerRemaining;
+7.	 
+8.	 
+9.	  // Strat Score
+10.	  // series A or earlier, US, post product and revenue, strong industry, 
+11.	  // Need to add Peak6 User fields for strong investor base, 
+12.	  // moved to esg+ section
+13.	  // is business structure missing from the mapped fields
+14.	  public static decimal StratScore(string FundRound, string location, string ProductStage,string industry) {
+15.	    decimal Strat = 0;    
+16.	    
+17.	      // what stage is the product in? Prefer generating revenue
+18.	    switch on ProductStage{
+19.	        when null
+20.	        {Strat=0;}
+21.	        when 'Pilot'
+22.	      	{Strat=30;}
+23.	        when 'Pre-launch / in development' ,'pre'
+24.	      	{Strat=50;}
+25.	        when 'Post-launch, pre-revenue','post'
+26.	      	{Strat=70;}
+27.	        when 'Post-launch, generating revenue','final'
+28.	      	{Strat=90;}
+29.	        when else
+30.	        {Strat=0;}
+31.	    }
+32.	    
+33.	    // Is it a prefered industry? 
+34.	    decimal industryMultiply = 1;
+35.	      switch on industry{
+36.	          when null{industryMultiply=1;}
+37.	          when 'Financial Services','Software','Interactive Media','Media & Entertainment','Healthcare'
+38.	          {industryMultiply=1.25;}
+39.	          when 'other'{industryMultiply=.8;}
+40.	      }
+41.	      
+42.	     // Is the firm US based ?
+43.	     decimal LocationMultiply = 1;
+44.	     if(location != null &&  location == 'United States')
+45.	     	{LocationMultiply = 1;}
+46.	      else{
+47.	          LocationMultiply = .5;
+48.	      }
+49.	      
+50.	      
+51.	     // Is this funding Series A?
+52.	     decimal fundingMultiply = 1;
+53.	     if(FundRound != null &&  FundRound == 'Series A')
+54.	     	{fundingMultiply = 1;}
+55.	      else{
+56.	          fundingMultiply = .75;
+57.	      }
+58.	      
+59.	    // calc final strat score  
+60.	    Strat  = strat * industryMultiply * LocationMultiply * fundingMultiply;
+61.	    Strat = math.max( math.min(100,Strat) , 0);
+62.	      
+63.	    return Strat;
+64.	    } 
+65.	///////////////////////////////////////////// End Strat Score      
+66.	    
+67.	    
+68.	    
+69.	    
+70.	  // Founder Score
+71.	  public static decimal FounderScore(Integer founders, string Experience, string Employment,string Strengths,string ESG, string Prevsuccess,string refer) {
+72.	    decimal FounderScore = 0;    
+73.	    
+74.	    // How many founders are there at this firm?
+75.	    switch on founders{
+76.	        when null
+77.	        {FounderScore=0;}
+78.	        when 0 
+79.	        {FounderScore=0;}
+80.	        when 1
+81.	        {FounderScore=.4;}
+82.	        when 2,3
+83.	        {FounderScore=.6;}
+84.	        when 4,5
+85.	        {FounderScore=.35;}
+86.	        when 6,7,8,9,10,11,12,13,14
+87.	        {FounderScore=.2;}
+88.	        when else
+89.	        {FounderScore=.1;}
+90.	    }
+91.	      
+92.	     // Has the founder demonstrated previous success with another venture?
+93.	    decimal PrevSuccessScore = 0;
+94.	    switch on Prevsuccess{
+95.	        when null
+96.	        {PrevSuccessScore=.85;}
+97.	        when 'Unsuccessful'
+98.	        {PrevSuccessScore=0.5;}
+99.	        when 'None'
+100.	        {PrevSuccessScore=.85;}
+101.	        when 'Success - Small degree'
+102.	        {PrevSuccessScore=1.05;}
+103.	        when 'Success - Mid degree'
+104.	        {PrevSuccessScore= 1.2;}
+105.	        when 'Success - Large degree'
+106.	        {PrevSuccessScore=1.35;}
+107.	        when else
+108.	        {PrevSuccessScore=.85;}
+109.	    }
+110.	      
+111.	         // Do we have a referal on the founder
+112.	    decimal referScore = 1;
+113.	    switch on Prevsuccess{
+114.	        when null
+115.	        {referScore=1;}
+116.	        when 'Yes - Casual Source'
+117.	        {referScore=1.1;}
+118.	        when 'Yes - Known Source'
+119.	        {referScore=1.2;}
+120.	        when else
+121.	        {referScore=1;}
+122.	    }  
+123.	      
+124.	      
+125.	    // How many combined years of experience do the founders have founders are there at this firm?
+126.	    decimal ExperienceMultiplier = 0;
+127.	    switch on Experience{
+128.	        when null
+129.	        {ExperienceMultiplier=1;}
+130.	        when '0-5 years'
+131.	        {ExperienceMultiplier=1;}
+132.	        when '5-10 years'
+133.	        {ExperienceMultiplier=1.1;}
+134.	        when '10-20 years'
+135.	        {ExperienceMultiplier=1.2;}
+136.	        when '20-40 years'
+137.	        {ExperienceMultiplier=1.3;}
+138.	        when else
+139.	        {ExperienceMultiplier=1;}
+140.	    }
+141.		
+142.	     // Does the owner of this deal rate the team's strengths as contributing, detracting or neither from the mission of the firm?
+143.	      decimal StrengthsMultiplier = 0;
+144.	      switch on Strengths{
+145.	          when null
+146.	          {StrengthsMultiplier = 1;}
+147.	          when 'Subpar'
+148.	          {StrengthsMultiplier = .8;}
+149.	          when 'Neutral'
+150.	          {StrengthsMultiplier = 1;} 
+151.	          when 'Good'
+152.	          {StrengthsMultiplier = 1.2;} 
+153.	          when else
+154.	          {StrengthsMultiplier = 1;} 
+155.	      }
+156.	      
+157.	    //Diverse Leadership?
+158.	    decimal ESGmultiple = 1 ;
+159.	      if( ESG != null && ESG.indexOf('Diverse founding team') != -1    ){ 
+160.	          ESGmultiple = 1.15;
+161.	      }
+162.	        
+163.	        
+164.	    //compute the final score    
+165.	    FounderScore = FounderScore * ExperienceMultiplier * StrengthsMultiplier * ESGmultiple * PrevSuccessScore * referScore * 100;  
+166.	    FounderScore = math.max( math.min(100,FounderScore) , 0);
+167.	    
+168.	    return FounderScore;
+169.	    }
+170.	///////////////////////////////////////////// End Founder Score
+171.	 
+172.	       
+173.	    
+174.	    
+175.	  // Unit Economic Score
+176.	  public static decimal EconScore(decimal UnitRev,decimal UnitCost, string ProductType) {
+177.	    decimal EconScore = 0;
+178.	    decimal margin = 0;
+179.	      if(UnitRev!=null && UnitCost!=null && UnitRev>0 && UnitCost>0  ){
+180.	      if (ProductType == 'Product (physical good)'){
+181.	         margin = UnitRev/UnitCost;
+182.	            if (margin < 1 ){margin = 1-((1-margin)*4);}
+183.	          	EconScore = margin / 1.1 * 70 ;
+184.	            EconScore = math.max( math.min(100,EconScore) , 0);
+185.	      }
+186.	      else{
+187.	         margin = UnitRev/UnitCost;
+188.	            if (margin < 1){margin = 1-((1-margin)*4);}
+189.	          	EconScore = margin / 1.3 * 70 ;
+190.	            EconScore = math.max( math.min(100,EconScore) , 0);
+191.	      }      
+192.	          
+193.	      }
+194.	    //EconScore  = decimal.valueof((Math.random() * 100));
+195.	    
+196.	    return EconScore;
+197.	    }
+198.	///////////////////////////////////////////// End Unit Economics Score
+199.	    
+200.	    
+201.	    
+202.	    
+203.	  // Financial Position Score
+204.	  public static decimal FinanceScore(decimal Capital, decimal Raise, decimal Revenue, decimal Burn, string Runway, decimal CostToAcquire, decimal LTV, decimal Payroll,string ProductType) {
+205.	    decimal FinanceScore = 0;    
+206.	      
+207.	    decimal burnRateScore = 0;
+208.	      if (Revenue != null && burn != null && burn !=0){
+209.	          burnRateScore = Revenue / (burn*12);
+210.	          if (burnRateScore<0){
+211.	              burnRateScore = 1 - ((1 - burnRateScore) * 2 );
+212.	          }
+213.	           
+214.	      }
+215.	    
+216.	    // what expected stake does P6 get?
+217.	    decimal Ownership = 0;
+218.	      if (Raise != null && Capital != null && Capital+Raise>0){
+219.	       Ownership = Raise / (Capital+Raise);
+220.	      
+221.	      }
+222.	    // how much runway does the firm have?
+223.	    decimal runwayScore = 0;
+224.	      switch on Runway{
+225.	          when null {runwayScore = 0;}
+226.	          when '0 to 6 months'  {runwayScore = .4;}
+227.	          when '6 to 12 months'{runwayScore = .7;}
+228.	          when '> 12 months' {runwayScore = 1;}
+229.	          when else {runwayScore = 0;}
+230.	      }
+231.	    
+232.	    // What pct of the LTV is spent on Acquistion 
+233.	    decimal AcqScore = 1;
+234.	      if (LTV != null && CostToAcquire != null && LTV>0 && CostToAcquire >0){
+235.	          AcqScore = ( LTV *.07 )/(CostToAcquire);
+236.	          AcqScore = math.max( math.min(1.15,AcqScore) , 0);
+237.	      }
+238.	      
+239.	    // How much of expense is spent on payroll?  Higher target for non physical good.
+240.	    decimal PayScore = 1;
+241.	      if (ProductType == 'Product (physical good)'){
+242.	         if (Payroll != null && Payroll>0){
+243.	          PayScore = .33 /(Payroll);
+244.	          PayScore = math.max( math.min(1.30,AcqScore) , .6); 
+245.	         }
+246.	      }
+247.	      else{
+248.	          if (Payroll != null && Payroll>0){
+249.	          PayScore = .66 /(Payroll);
+250.	          PayScore = math.max( math.min(1.30,PayScore) , .6); 
+251.	         }
+252.	          
+253.	      }
+254.	      
+255.	      
+256.	    //FinanceScore  = decimal.valueof((Math.random() * 100));
+257.	    FinanceScore = 70 * burnRateScore + 30 * Ownership * runwayScore * AcqScore * PayScore;
+258.	    FinanceScore = math.max( math.min(100,FinanceScore) , 0);  
+259.	      
+260.	    return FinanceScore;
+261.	    }
+262.	////////////////////////////////////////////// End Finanical Position Score
+263.	 
+264.	    
+265.	   // Product & Marketing Score 
+266.	   // Uses a lot of Peak6 input data - Hard to get a realistic idea from the founders?
+267.	  public static decimal ProductScore(string ProductStage,string ProductType,string Competition, decimal MarketShare, string ProductStrategy) {
+268.	    decimal ProductScore = 0;    
+269.	    
+270.	    // what stage is the product in? Prefer generating revenue
+271.	    switch on ProductStage{
+272.	        when null
+273.	        {ProductScore=0;}
+274.	        when 'Pilot'
+275.	      	{ProductScore=30;}
+276.	        when 'Pre-launch / in development','pre'
+277.	      	{ProductScore=50;}
+278.	        when 'Post-launch, pre-revenue','post'
+279.	      	{ProductScore=70;}
+280.	        when 'Post-launch, generating revenue','final'
+281.	      	{ProductScore=90;}
+282.	        when else
+283.	        {ProductScore=0;}
+284.	    }
+285.	      
+286.	    //If it is a physical good slight penatly 
+287.	    decimal ProductMultiple = 1; 
+288.	      switch on ProductType{
+289.	          when null{ProductMultiple=1;}
+290.	          when 'Product(Physical Good)' {ProductMultiple=.85;}
+291.	          when else {ProductMultiple=1;}
+292.	              
+293.	      }
+294.	    
+295.	   // how does the Peak6 team grade the Competition
+296.	   decimal CompetitionMultiple = 0;
+297.	      switch on Competition{
+298.	          when null {CompetitionMultiple = 1; }
+299.	          when 'Non-Existent' {CompetitionMultiple = 1.3; }
+300.	          when 'Low' {CompetitionMultiple = 1.15; }
+301.	          when 'Moderate' {CompetitionMultiple = 1; }
+302.	          when 'High' {CompetitionMultiple = .9; }
+303.	          when 'Hyper' {CompetitionMultiple = .7; }
+304.	      }
+305.	      
+306.		// how does the Peak6 team grade the market share potential at year 3
+307.		decimal MrktShr = 1;
+308.	      if (MarketShare != null ){
+309.	          MrktShr = MarketShare / 1000000000;  // $1,000,000,000
+310.	          MrktShr = math.max( math.min(1.3,MrktShr) , 0.7);
+311.	        }  
+312.	    // How does the Peak6 team grade the product strategy
+313.	    decimal PrdctStrt = 0;
+314.	      switch on ProductStrategy{
+315.	          when null {PrdctStrt = 1;}
+316.	          when 'weak' {PrdctStrt = .1;}
+317.	          when 'lagging' {PrdctStrt = .3;}
+318.	          when 'status quo' {PrdctStrt = .55;}
+319.	          when 'leading' {PrdctStrt = 1;}
+320.	          when 'visionary' {PrdctStrt = 1.2;}
+321.	             
+322.	      }
+323.	    
+324.	    ProductScore = ProductScore * ProductMultiple * CompetitionMultiple * MrktShr * PrdctStrt ;
+325.	    ProductScore = math.max( math.min(100,ProductScore) , 0);  
+326.	    //ProductScore  = decimal.valueof((Math.random() * 100));
+327.	    
+328.	    return ProductScore;
+329.	    } 
+330.	 /////////////////////////////////////////////  End Product & Marketing Score.
+331.	    
+332.	    
+333.	    
+334.	  // ESG Score
+335.	  public static decimal ESGScore(string ESG) {
+336.	    decimal ESGscore = 0;    
+337.	    decimal ESGcount = 0;
+338.	        
+339.	    if(!string.isBlank(ESG)){
+340.	         list<string> ESGs =  ESG.split(';');
+341.	         for(string str : ESGs){
+342.	             if(str!='No')
+343.	             {ESGcount = ESGcount + 1;} // ++;
+344.	             
+345.	             
+346.	          }
+347.	 	}		
+348.	    
+349.	    ESGscore = ESGcount / 4 * 100 ;
+350.	    ESGscore = math.max( math.min(100,ESGscore) , 0); 
+351.	      
+352.	    //ESGscore  = decimal.valueof((Math.random() * 100));
+353.	    
+354.	    return ESGscore;
+355.	    } 
+356.	  ////////////////////////////////////////////////  
+357.	    
+358.	    
+359.	    
+360.	 
+361.	 
+362.	 
+363.	  // Total Score  / Deal Score
+364.	  // s.DealScore__c = StratScore/100 * (Founder_Score*.3 + UnitEconomicScore*.20 + FinancePositionScore*.25 + ProductMarketScore*.25 ) * (ESGscore / 100 * 15)    ;
+365.	  public static decimal DealScore(Decimal Founder_Score, Decimal UnitEconomicScore, Decimal FinancePositionScore, Decimal ProductMarketScore, Decimal ESGscore, Decimal StratScore ){
+366.	  		decimal DealScore = 0;
+367.	            
+368.	      DealScore = StratScore/100 * (Founder_Score*.4 + UnitEconomicScore*.3 + FinancePositionScore*.3 + ProductMarketScore*.3 ) * ((ESGscore / 100 )*.15 + 1);  //1.495 - max
+369.	      
+370.	      if(DealScore > 80) {
+371.	          decimal tmpscore = 0 ;
+372.	          tmpscore = 149.5 - DealScore;
+373.	          tmpscore = tmpscore / 69.5;
+374.	          tmpscore = 100 - 20 * tmpscore;
+375.	          DealScore = tmpscore;
+376.	          
+377.	      }
+378.	            
+379.	      return DealScore;
+380.	    
+381.	} 
+382.	    
+383.	    
+384.	    
+385.	}
+ 
+
